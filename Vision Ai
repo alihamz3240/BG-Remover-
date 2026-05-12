@@ -1,0 +1,482 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+
+const STYLE_PRESETS = [
+  { id: "realistic", label: "Realistic", icon: "🎯", suffix: "photorealistic, 8k, detailed" },
+  { id: "cinematic", label: "Cinematic", icon: "🎬", suffix: "cinematic lighting, film grain, anamorphic" },
+  { id: "anime", label: "Anime", icon: "✨", suffix: "anime style, Studio Ghibli inspired, vibrant" },
+  { id: "cyberpunk", label: "Cyberpunk", icon: "⚡", suffix: "cyberpunk, neon lights, dystopian, blade runner" },
+  { id: "fantasy", label: "Fantasy", icon: "🔮", suffix: "fantasy art, magical, ethereal, enchanted" },
+  { id: "3d", label: "3D Render", icon: "💎", suffix: "3D render, octane, subsurface scattering, ray tracing" },
+  { id: "watercolor", label: "Watercolor", icon: "🎨", suffix: "watercolor painting, soft washes, artistic" },
+  { id: "oil", label: "Oil Painting", icon: "🖼", suffix: "oil painting, impressionist, textured brushstrokes" },
+  { id: "pixel", label: "Pixel Art", icon: "🕹", suffix: "pixel art, 16-bit, retro game style" },
+  { id: "minimal", label: "Minimalist", icon: "◼", suffix: "minimalist, clean, simple composition, white space" },
+];
+
+const ASPECT_RATIOS = [
+  { id: "1024x1024", label: "1:1", w: 1024, h: 1024 },
+  { id: "1792x1024", label: "16:9", w: 1792, h: 1024 },
+  { id: "1024x1792", label: "9:16", w: 1024, h: 1792 },
+];
+
+const SAMPLE_PROMPTS = [
+  "A lone astronaut standing on a crimson Martian cliff at golden hour, vast canyon below",
+  "Ancient temple swallowed by jungle vines, rays of sunlight piercing through the canopy",
+  "Futuristic Tokyo street market at midnight, holographic signs, rain-slicked pavement",
+  "Portrait of a silver-haired sorceress wielding stardust, cosmic background",
+  "Macro photograph of a dewdrop on a spider web at dawn, rainbow refraction",
+  "Abandoned lighthouse on a rocky shore, stormy sea, bioluminescent waves",
+  "Steam-powered clockwork dragon soaring over Victorian London, sepia tones",
+  "Ethereal forest spirit made of autumn leaves and fireflies, moonlit glade",
+];
+
+const QUALITY_LEVELS = ["standard", "hd"];
+
+function ParticleField() {
+  const canvasRef = useRef(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    let w = (canvas.width = canvas.offsetWidth);
+    let h = (canvas.height = canvas.offsetHeight);
+    const particles = Array.from({ length: 60 }, () => ({
+      x: Math.random() * w, y: Math.random() * h,
+      vx: (Math.random() - 0.5) * 0.3, vy: (Math.random() - 0.5) * 0.3,
+      r: Math.random() * 1.5 + 0.5, a: Math.random() * 0.5 + 0.1,
+    }));
+    let raf;
+    const draw = () => {
+      ctx.clearRect(0, 0, w, h);
+      particles.forEach(p => {
+        p.x += p.vx; p.y += p.vy;
+        if (p.x < 0) p.x = w; if (p.x > w) p.x = 0;
+        if (p.y < 0) p.y = h; if (p.y > h) p.y = 0;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(160, 130, 255, ${p.a})`;
+        ctx.fill();
+      });
+      particles.forEach((a, i) => particles.slice(i + 1).forEach(b => {
+        const dx = a.x - b.x, dy = a.y - b.y, d = Math.sqrt(dx*dx+dy*dy);
+        if (d < 80) { ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+          ctx.strokeStyle = `rgba(160, 130, 255, ${0.12 * (1 - d/80)})`; ctx.lineWidth = 0.5; ctx.stroke(); }
+      }));
+      raf = requestAnimationFrame(draw);
+    };
+    draw();
+    const ro = new ResizeObserver(() => { w = canvas.width = canvas.offsetWidth; h = canvas.height = canvas.offsetHeight; });
+    ro.observe(canvas);
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
+  }, []);
+  return <canvas ref={canvasRef} style={{ position:"absolute", inset:0, width:"100%", height:"100%", pointerEvents:"none" }} />;
+}
+
+function Toaster({ toasts }) {
+  return (
+    <div style={{ position:"fixed", bottom:24, right:24, zIndex:9999, display:"flex", flexDirection:"column", gap:8 }}>
+      {toasts.map(t => (
+        <div key={t.id} style={{ background: t.type==="error" ? "#3d1a1a" : "#1a2d1a", border:`1px solid ${t.type==="error"?"#7f3535":"#356b35"}`, color: t.type==="error"?"#f87171":"#86efac", padding:"10px 16px", borderRadius:10, fontSize:13, fontFamily:"'DM Mono', monospace", animation:"slideIn 0.2s ease", maxWidth:280 }}>
+          {t.msg}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ImageCard({ item, onReuse }) {
+  const [hover, setHover] = useState(false);
+  const [liked, setLiked] = useState(false);
+  const handleDownload = () => {
+    const a = document.createElement("a"); a.href = item.url; a.download = `vision-ai-${item.id}.png`; a.click();
+  };
+  return (
+    <div onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      style={{ position:"relative", borderRadius:14, overflow:"hidden", background:"#0f0f18", border:"1px solid rgba(120,80,255,0.2)", transition:"transform 0.2s, box-shadow 0.2s", transform: hover?"scale(1.02)":"scale(1)", boxShadow: hover?"0 0 30px rgba(120,80,255,0.2)":"0 0 0 transparent" }}>
+      <img src={item.url} alt={item.prompt} style={{ width:"100%", display:"block", aspectRatio: item.ratio==="1792x1024"?"16/9":item.ratio==="1024x1792"?"9/16":"1/1", objectFit:"cover" }} />
+      {hover && (
+        <div style={{ position:"absolute", inset:0, background:"linear-gradient(to top, rgba(0,0,0,0.9) 0%, transparent 50%)", display:"flex", flexDirection:"column", justifyContent:"flex-end", padding:14 }}>
+          <p style={{ color:"#e0d8ff", fontSize:11, margin:"0 0 10px", lineHeight:1.4, display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical", overflow:"hidden" }}>{item.prompt}</p>
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={handleDownload} style={{ flex:1, padding:"6px 0", background:"rgba(120,80,255,0.8)", border:"none", borderRadius:7, color:"#fff", fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>↓ Download</button>
+            <button onClick={() => onReuse(item.prompt)} style={{ flex:1, padding:"6px 0", background:"rgba(255,255,255,0.1)", border:"1px solid rgba(255,255,255,0.2)", borderRadius:7, color:"#fff", fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>↺ Reuse</button>
+            <button onClick={() => setLiked(l=>!l)} style={{ padding:"6px 10px", background: liked?"rgba(236,72,153,0.5)":"rgba(255,255,255,0.1)", border:"1px solid rgba(255,255,255,0.2)", borderRadius:7, color: liked?"#f9a8d4":"#fff", fontSize:12, cursor:"pointer" }}>{liked?"♥":"♡"}</button>
+          </div>
+        </div>
+      )}
+      <div style={{ position:"absolute", top:8, right:8, background:"rgba(0,0,0,0.6)", borderRadius:5, padding:"2px 7px", fontSize:10, color:"rgba(255,255,255,0.6)", fontFamily:"'DM Mono', monospace" }}>{item.style}</div>
+    </div>
+  );
+}
+
+function LoadingCard({ ratio }) {
+  return (
+    <div style={{ borderRadius:14, overflow:"hidden", background:"#0f0f18", border:"1px solid rgba(120,80,255,0.3)", aspectRatio: ratio==="1792x1024"?"16/9":ratio==="1024x1792"?"9/16":"1/1", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:16 }}>
+      <div style={{ width:48, height:48, borderRadius:"50%", border:"2px solid rgba(120,80,255,0.2)", borderTop:"2px solid #a855f7", animation:"spin 1s linear infinite" }} />
+      <div style={{ textAlign:"center" }}>
+        <p style={{ color:"#a78bfa", fontSize:13, margin:0, fontFamily:"'DM Mono', monospace" }}>Generating...</p>
+        <p style={{ color:"rgba(255,255,255,0.3)", fontSize:11, margin:"4px 0 0" }}>Vision AI is creating your image</p>
+      </div>
+    </div>
+  );
+}
+
+export default function VisionAI() {
+  const [apiKey, setApiKey] = useState("");
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [showApiModal, setShowApiModal] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [negPrompt, setNegPrompt] = useState("");
+  const [style, setStyle] = useState("realistic");
+  const [ratio, setRatio] = useState("1024x1024");
+  const [quality, setQuality] = useState("standard");
+  const [numImages, setNumImages] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [images, setImages] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [toasts, setToasts] = useState([]);
+  const [tab, setTab] = useState("generate");
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [enhancing, setEnhancing] = useState(false);
+  const [fullscreen, setFullscreen] = useState(null);
+  const promptRef = useRef(null);
+
+  const toast = useCallback((msg, type="success") => {
+    const id = Date.now();
+    setToasts(t => [...t, { id, msg, type }]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3000);
+  }, []);
+
+  const randomPrompt = () => {
+    const p = SAMPLE_PROMPTS[Math.floor(Math.random() * SAMPLE_PROMPTS.length)];
+    setPrompt(p);
+    toast("Random prompt loaded ✨");
+  };
+
+  const enhancePrompt = async () => {
+    if (!prompt.trim()) return toast("Enter a prompt first", "error");
+    if (!apiKey) { setShowApiModal(true); return; }
+    setEnhancing(true);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          messages: [{ role: "user", content: `Enhance this image generation prompt to be more vivid, detailed, and cinematic. Return ONLY the enhanced prompt, nothing else. Original: "${prompt}"` }],
+        }),
+      });
+      const data = await res.json();
+      const enhanced = data.content?.[0]?.text?.trim();
+      if (enhanced) { setPrompt(enhanced); toast("Prompt enhanced ✨"); }
+    } catch { toast("Enhancement failed", "error"); }
+    setEnhancing(false);
+  };
+
+  const generate = async () => {
+    if (!prompt.trim()) return toast("Please enter a prompt", "error");
+    if (!apiKey) { setShowApiModal(true); return; }
+    setLoading(true);
+    const selectedStyle = STYLE_PRESETS.find(s => s.id === style);
+    const fullPrompt = `${prompt}${negPrompt ? `, avoiding: ${negPrompt}` : ""}, ${selectedStyle.suffix}`;
+    const [w, h] = ratio.split("x").map(Number);
+    try {
+      const results = [];
+      for (let i = 0; i < Math.min(numImages, 4); i++) {
+        const res = await fetch("https://api.openai.com/v1/images/generations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({ model: "dall-e-3", prompt: fullPrompt, n: 1, size: `${w}x${h}`, quality, response_format: "url" }),
+        });
+        if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "API error"); }
+        const data = await res.json();
+        results.push({ id: Date.now() + i, url: data.data[0].url, prompt, style: selectedStyle.label, ratio, timestamp: new Date().toLocaleTimeString() });
+      }
+      setImages(prev => [...results, ...prev]);
+      setHistory(prev => [...results, ...prev]);
+      toast(`${results.length} image${results.length>1?"s":""} generated! 🎨`);
+    } catch (e) { toast(e.message || "Generation failed", "error"); }
+    setLoading(false);
+  };
+
+  const S = {
+    app: { minHeight:"100vh", background:"#080810", color:"#e8e4ff", fontFamily:"'DM Sans', 'Segoe UI', sans-serif", position:"relative", overflow:"hidden" },
+    glow1: { position:"fixed", top:"-20%", left:"-10%", width:600, height:600, borderRadius:"50%", background:"radial-gradient(circle, rgba(88,28,235,0.15) 0%, transparent 70%)", pointerEvents:"none", zIndex:0 },
+    glow2: { position:"fixed", bottom:"-20%", right:"-10%", width:500, height:500, borderRadius:"50%", background:"radial-gradient(circle, rgba(168,85,247,0.12) 0%, transparent 70%)", pointerEvents:"none", zIndex:0 },
+    navbar: { position:"sticky", top:0, zIndex:100, background:"rgba(8,8,16,0.8)", backdropFilter:"blur(20px)", borderBottom:"1px solid rgba(120,80,255,0.15)", padding:"0 24px", display:"flex", alignItems:"center", justifyContent:"space-between", height:60 },
+    logo: { fontSize:20, fontWeight:700, background:"linear-gradient(135deg, #a78bfa, #60a5fa)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", letterSpacing:"-0.5px" },
+    hero: { position:"relative", textAlign:"center", padding:"80px 24px 60px", overflow:"hidden" },
+    heroTitle: { fontSize:"clamp(36px, 6vw, 72px)", fontWeight:800, lineHeight:1.05, letterSpacing:"-2px", background:"linear-gradient(135deg, #fff 0%, #a78bfa 50%, #60a5fa 100%)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", margin:"0 0 16px" },
+    heroSub: { color:"rgba(200,190,255,0.6)", fontSize:"clamp(15px, 2vw, 18px)", margin:"0 auto 40px", maxWidth:520, lineHeight:1.6 },
+    main: { maxWidth:1200, margin:"0 auto", padding:"0 24px 80px" },
+    card: { background:"rgba(15,15,28,0.9)", border:"1px solid rgba(120,80,255,0.2)", borderRadius:18, padding:24, backdropFilter:"blur(10px)" },
+    label: { fontSize:11, fontWeight:600, letterSpacing:"0.08em", color:"rgba(160,140,255,0.7)", textTransform:"uppercase", marginBottom:8, display:"block" },
+    textarea: { width:"100%", background:"rgba(120,80,255,0.06)", border:"1px solid rgba(120,80,255,0.2)", borderRadius:12, color:"#e8e4ff", fontSize:14, padding:"14px 16px", fontFamily:"inherit", resize:"vertical", minHeight:100, outline:"none", boxSizing:"border-box", lineHeight:1.6, transition:"border-color 0.2s" },
+    btn: { padding:"11px 22px", borderRadius:10, border:"none", fontFamily:"inherit", cursor:"pointer", fontSize:14, fontWeight:600, transition:"all 0.2s" },
+    genBtn: { width:"100%", padding:"14px", background:"linear-gradient(135deg, #7c3aed, #4f46e5)", color:"#fff", borderRadius:12, border:"none", fontSize:15, fontWeight:700, cursor:"pointer", fontFamily:"inherit", letterSpacing:"0.02em", position:"relative", overflow:"hidden", transition:"opacity 0.2s" },
+    styleGrid: { display:"grid", gridTemplateColumns:"repeat(5, 1fr)", gap:8 },
+    styleBtn: (active) => ({ padding:"8px 4px", borderRadius:9, border:`1px solid ${active?"rgba(167,139,250,0.6)":"rgba(120,80,255,0.15)"}`, background: active?"rgba(120,80,255,0.2)":"rgba(120,80,255,0.05)", color: active?"#c4b5fd":"rgba(180,170,255,0.6)", fontSize:11, cursor:"pointer", fontFamily:"inherit", textAlign:"center", transition:"all 0.15s" }),
+    ratioBtn: (active) => ({ padding:"8px 14px", borderRadius:8, border:`1px solid ${active?"rgba(167,139,250,0.6)":"rgba(120,80,255,0.15)"}`, background: active?"rgba(120,80,255,0.2)":"transparent", color: active?"#c4b5fd":"rgba(180,170,255,0.6)", fontSize:12, cursor:"pointer", fontFamily:"'DM Mono', monospace", transition:"all 0.15s" }),
+    imgGrid: { display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(260px, 1fr))", gap:16 },
+    tab: (active) => ({ padding:"8px 18px", borderRadius:8, border:"none", background: active?"rgba(120,80,255,0.25)":"transparent", color: active?"#c4b5fd":"rgba(200,180,255,0.5)", fontSize:13, fontWeight: active?600:400, cursor:"pointer", fontFamily:"inherit", transition:"all 0.15s" }),
+  };
+
+  return (
+    <div style={S.app}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap');
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes slideIn { from { transform: translateX(20px); opacity:0; } to { transform: translateX(0); opacity:1; } }
+        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
+        textarea:focus { border-color: rgba(167,139,250,0.5) !important; }
+        input:focus { border-color: rgba(167,139,250,0.5) !important; outline: none; }
+        ::-webkit-scrollbar { width:6px; } ::-webkit-scrollbar-track { background:#080810; } ::-webkit-scrollbar-thumb { background:#3b2a7a; border-radius:3px; }
+      `}</style>
+      <div style={S.glow1} /><div style={S.glow2} />
+
+      {/* Navbar */}
+      <nav style={S.navbar}>
+        <div style={S.logo}>✦ Vision AI</div>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <span style={{ fontSize:11, color:"rgba(160,140,255,0.5)", fontFamily:"'DM Mono', monospace" }}>{images.length} images generated</span>
+          <button onClick={() => setShowApiModal(true)} style={{ ...S.btn, padding:"7px 14px", background:"rgba(120,80,255,0.15)", border:"1px solid rgba(120,80,255,0.3)", color:"#a78bfa", fontSize:12 }}>
+            {apiKey ? "✓ API Connected" : "⚡ Connect API"}
+          </button>
+        </div>
+      </nav>
+
+      {/* Hero */}
+      <div style={S.hero}>
+        <ParticleField />
+        <div style={{ position:"relative", zIndex:1 }}>
+          <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:"rgba(120,80,255,0.12)", border:"1px solid rgba(120,80,255,0.25)", borderRadius:100, padding:"5px 14px", marginBottom:24, fontSize:12, color:"#a78bfa" }}>
+            <span style={{ width:6, height:6, borderRadius:"50%", background:"#a855f7", display:"inline-block", animation:"pulse 2s infinite" }} /> Powered by DALL-E 3 &amp; Claude AI
+          </div>
+          <h1 style={S.heroTitle}>Create Stunning Images<br/>with AI Imagination</h1>
+          <p style={S.heroSub}>Transform your words into breathtaking visuals. Choose your style, set your aspect ratio, and watch Vision AI bring your ideas to life.</p>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div style={S.main}>
+        <div style={{ display:"grid", gridTemplateColumns:"360px 1fr", gap:20, alignItems:"start" }}>
+
+          {/* Left Panel */}
+          <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+            {/* Prompt */}
+            <div style={S.card}>
+              <span style={S.label}>Prompt</span>
+              <div style={{ position:"relative" }}>
+                <textarea
+                  ref={promptRef}
+                  value={prompt}
+                  onChange={e => setPrompt(e.target.value)}
+                  placeholder="Describe the image you want to create..."
+                  style={S.textarea}
+                  onFocus={() => setShowSuggestions(false)}
+                />
+                <div style={{ position:"absolute", bottom:10, right:12, fontSize:10, color:"rgba(160,140,255,0.4)", fontFamily:"'DM Mono', monospace" }}>{prompt.length}/4000</div>
+              </div>
+              <div style={{ display:"flex", gap:8, marginTop:10 }}>
+                <button onClick={randomPrompt} style={{ ...S.btn, padding:"7px 12px", background:"rgba(120,80,255,0.1)", border:"1px solid rgba(120,80,255,0.2)", color:"#a78bfa", fontSize:12 }}>🎲 Random</button>
+                <button onClick={enhancePrompt} disabled={enhancing} style={{ ...S.btn, padding:"7px 12px", background:"rgba(120,80,255,0.1)", border:"1px solid rgba(120,80,255,0.2)", color:"#a78bfa", fontSize:12, opacity: enhancing?0.6:1 }}>
+                  {enhancing ? "✨ Enhancing..." : "✨ Enhance"}
+                </button>
+                <button onClick={() => setShowSuggestions(s=>!s)} style={{ ...S.btn, padding:"7px 12px", background:"rgba(120,80,255,0.1)", border:"1px solid rgba(120,80,255,0.2)", color:"#a78bfa", fontSize:12 }}>💡 Ideas</button>
+              </div>
+              {showSuggestions && (
+                <div style={{ marginTop:10, display:"flex", flexDirection:"column", gap:6 }}>
+                  {SAMPLE_PROMPTS.slice(0,4).map((p,i) => (
+                    <button key={i} onClick={() => { setPrompt(p); setShowSuggestions(false); }} style={{ textAlign:"left", padding:"8px 12px", background:"rgba(120,80,255,0.08)", border:"1px solid rgba(120,80,255,0.15)", borderRadius:8, color:"rgba(200,185,255,0.8)", fontSize:12, cursor:"pointer", fontFamily:"inherit", lineHeight:1.4 }}>{p}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Negative Prompt */}
+            <div style={S.card}>
+              <span style={S.label}>Negative Prompt</span>
+              <textarea value={negPrompt} onChange={e => setNegPrompt(e.target.value)} placeholder="Things to avoid: blurry, ugly, distorted..." style={{ ...S.textarea, minHeight:60, fontSize:13 }} />
+            </div>
+
+            {/* Style */}
+            <div style={S.card}>
+              <span style={S.label}>Style Preset</span>
+              <div style={S.styleGrid}>
+                {STYLE_PRESETS.map(s => (
+                  <button key={s.id} onClick={() => setStyle(s.id)} style={S.styleBtn(style===s.id)}>
+                    <div style={{ fontSize:16, marginBottom:3 }}>{s.icon}</div>
+                    <div>{s.label}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Controls */}
+            <div style={S.card}>
+              <div style={{ marginBottom:16 }}>
+                <span style={S.label}>Aspect Ratio</span>
+                <div style={{ display:"flex", gap:8 }}>
+                  {ASPECT_RATIOS.map(r => <button key={r.id} onClick={() => setRatio(r.id)} style={S.ratioBtn(ratio===r.id)}>{r.label}</button>)}
+                </div>
+              </div>
+              <div style={{ marginBottom:16 }}>
+                <span style={S.label}>Quality</span>
+                <div style={{ display:"flex", gap:8 }}>
+                  {QUALITY_LEVELS.map(q => <button key={q} onClick={() => setQuality(q)} style={S.ratioBtn(quality===q)}>{q.charAt(0).toUpperCase()+q.slice(1)}</button>)}
+                </div>
+              </div>
+              <div>
+                <span style={S.label}>Number of Images: {numImages}</span>
+                <input type="range" min={1} max={4} value={numImages} onChange={e => setNumImages(+e.target.value)} step={1}
+                  style={{ width:"100%", accentColor:"#7c3aed" }} />
+                <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:"rgba(160,140,255,0.4)", fontFamily:"'DM Mono', monospace", marginTop:4 }}>
+                  <span>1</span><span>2</span><span>3</span><span>4</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Generate Button */}
+            <button onClick={generate} disabled={loading || !prompt.trim()} style={{ ...S.genBtn, opacity: loading||!prompt.trim() ? 0.6 : 1 }}>
+              {loading ? (
+                <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:10 }}>
+                  <span style={{ width:16, height:16, borderRadius:"50%", border:"2px solid rgba(255,255,255,0.3)", borderTop:"2px solid #fff", animation:"spin 0.8s linear infinite", display:"inline-block" }} />
+                  Generating {numImages} image{numImages>1?"s":""}...
+                </span>
+              ) : `✦ Generate ${numImages > 1 ? `${numImages} Images` : "Image"}`}
+            </button>
+          </div>
+
+          {/* Right Panel */}
+          <div>
+            <div style={{ display:"flex", gap:4, marginBottom:16, background:"rgba(120,80,255,0.06)", borderRadius:10, padding:4, width:"fit-content" }}>
+              {["generate","history"].map(t => <button key={t} onClick={() => setTab(t)} style={S.tab(tab===t)}>{t==="generate"?"🖼 Gallery":"🕐 History"}</button>)}
+            </div>
+
+            {tab === "generate" && (
+              <>
+                {loading && (
+                  <div style={{ ...S.imgGrid, marginBottom:16 }}>
+                    {Array.from({ length: numImages }).map((_,i) => <LoadingCard key={i} ratio={ratio} />)}
+                  </div>
+                )}
+                {images.length === 0 && !loading ? (
+                  <div style={{ ...S.card, textAlign:"center", padding:"80px 40px" }}>
+                    <div style={{ fontSize:48, marginBottom:16 }}>✦</div>
+                    <p style={{ color:"rgba(160,140,255,0.5)", fontSize:15, margin:0 }}>Your generated images will appear here</p>
+                    <p style={{ color:"rgba(160,140,255,0.3)", fontSize:13, marginTop:8 }}>Enter a prompt and click Generate to start creating</p>
+                  </div>
+                ) : (
+                  <div style={S.imgGrid}>
+                    {images.map(img => <ImageCard key={img.id} item={img} onReuse={p => { setPrompt(p); toast("Prompt loaded!"); }} />)}
+                  </div>
+                )}
+              </>
+            )}
+
+            {tab === "history" && (
+              <>
+                {history.length === 0 ? (
+                  <div style={{ ...S.card, textAlign:"center", padding:"60px 40px" }}>
+                    <p style={{ color:"rgba(160,140,255,0.5)", fontSize:15, margin:0 }}>No history yet</p>
+                  </div>
+                ) : (
+                  <div style={S.imgGrid}>
+                    {history.map(img => <ImageCard key={img.id} item={img} onReuse={p => { setPrompt(p); setTab("generate"); toast("Prompt loaded!"); }} />)}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Features Section */}
+        <div style={{ marginTop:80, textAlign:"center" }}>
+          <div style={{ fontSize:11, letterSpacing:"0.12em", color:"rgba(167,139,250,0.6)", textTransform:"uppercase", marginBottom:16 }}>Capabilities</div>
+          <h2 style={{ fontSize:"clamp(28px,4vw,42px)", fontWeight:800, letterSpacing:"-1px", margin:"0 0 48px", background:"linear-gradient(135deg,#fff,#a78bfa)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>Everything you need to create</h2>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:16 }}>
+            {[
+              { icon:"⚡", title:"Ultra-Fast Generation", desc:"DALL-E 3 delivers stunning images in seconds with unprecedented detail and accuracy" },
+              { icon:"🎨", title:"10 Style Presets", desc:"From photorealistic to anime, cyberpunk to watercolor — find your perfect aesthetic" },
+              { icon:"✨", title:"AI Prompt Enhancer", desc:"Claude AI supercharges your prompts to unlock more vivid, detailed, and creative results" },
+              { icon:"📐", title:"Flexible Aspect Ratios", desc:"Create portraits, landscapes, or squares — optimized for any platform or use case" },
+              { icon:"💎", title:"HD Quality Mode", desc:"Generate high-definition images with exceptional clarity for professional use" },
+              { icon:"🔄", title:"Unlimited History", desc:"All your generations saved locally. Revisit, reuse, and iterate on any previous creation" },
+            ].map((f,i) => (
+              <div key={i} style={{ ...S.card, textAlign:"left" }}>
+                <div style={{ fontSize:28, marginBottom:12 }}>{f.icon}</div>
+                <h3 style={{ fontSize:15, fontWeight:700, margin:"0 0 8px", color:"#e8e4ff" }}>{f.title}</h3>
+                <p style={{ fontSize:13, color:"rgba(160,140,255,0.6)", margin:0, lineHeight:1.6 }}>{f.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Pricing */}
+        <div style={{ marginTop:80, textAlign:"center" }}>
+          <div style={{ fontSize:11, letterSpacing:"0.12em", color:"rgba(167,139,250,0.6)", textTransform:"uppercase", marginBottom:16 }}>Pricing</div>
+          <h2 style={{ fontSize:"clamp(28px,4vw,42px)", fontWeight:800, letterSpacing:"-1px", margin:"0 0 48px", background:"linear-gradient(135deg,#fff,#a78bfa)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>Simple, transparent pricing</h2>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:16, maxWidth:860, margin:"0 auto" }}>
+            {[
+              { name:"Starter", price:"$9", period:"/mo", credits:"50 credits", features:["50 image generations","Standard quality","5 style presets","Community support"], highlight:false },
+              { name:"Creator", price:"$29", period:"/mo", credits:"250 credits", features:["250 image generations","HD quality mode","All 10 style presets","Prompt enhancer","Priority generation","Email support"], highlight:true },
+              { name:"Studio", price:"$79", period:"/mo", credits:"Unlimited", features:["Unlimited generations","HD + Ultra quality","Custom style presets","API access","Team workspace","Dedicated support"], highlight:false },
+            ].map((p,i) => (
+              <div key={i} style={{ ...S.card, position:"relative", border: p.highlight?"1px solid rgba(167,139,250,0.5)":"1px solid rgba(120,80,255,0.2)", background: p.highlight?"rgba(120,80,255,0.12)":"rgba(15,15,28,0.9)" }}>
+                {p.highlight && <div style={{ position:"absolute", top:-12, left:"50%", transform:"translateX(-50%)", background:"linear-gradient(135deg,#7c3aed,#4f46e5)", color:"#fff", fontSize:11, fontWeight:700, padding:"4px 14px", borderRadius:100, letterSpacing:"0.06em" }}>MOST POPULAR</div>}
+                <div style={{ marginBottom:20 }}>
+                  <p style={{ fontSize:12, color:"rgba(167,139,250,0.6)", margin:"0 0 4px", textTransform:"uppercase", letterSpacing:"0.08em" }}>{p.name}</p>
+                  <div style={{ display:"flex", alignItems:"baseline", gap:4 }}>
+                    <span style={{ fontSize:42, fontWeight:800, color:"#e8e4ff" }}>{p.price}</span>
+                    <span style={{ fontSize:14, color:"rgba(160,140,255,0.5)" }}>{p.period}</span>
+                  </div>
+                  <p style={{ fontSize:12, color:"rgba(167,139,250,0.5)", margin:"4px 0 0", fontFamily:"'DM Mono', monospace" }}>{p.credits}</p>
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:20 }}>
+                  {p.features.map((f,j) => <div key={j} style={{ display:"flex", alignItems:"center", gap:8, fontSize:13, color:"rgba(200,185,255,0.8)" }}><span style={{ color:"#a78bfa", fontSize:12 }}>✓</span>{f}</div>)}
+                </div>
+                <button style={{ width:"100%", padding:"11px 0", borderRadius:10, border: p.highlight?"none":"1px solid rgba(120,80,255,0.3)", background: p.highlight?"linear-gradient(135deg,#7c3aed,#4f46e5)":"rgba(120,80,255,0.1)", color:"#e8e4ff", fontSize:14, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>Get Started</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* API Key Modal */}
+      {showApiModal && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:24 }}
+          onClick={e => { if(e.target===e.currentTarget) setShowApiModal(false); }}>
+          <div style={{ background:"#0f0f1e", border:"1px solid rgba(120,80,255,0.35)", borderRadius:20, padding:32, maxWidth:440, width:"100%" }}>
+            <div style={{ fontSize:28, marginBottom:8 }}>⚡</div>
+            <h2 style={{ fontSize:20, fontWeight:800, margin:"0 0 8px", color:"#e8e4ff" }}>Connect OpenAI API</h2>
+            <p style={{ fontSize:13, color:"rgba(160,140,255,0.6)", margin:"0 0 24px", lineHeight:1.6 }}>Enter your OpenAI API key to start generating images. Your key is stored locally and never sent to our servers.</p>
+            <input
+              type="password"
+              value={apiKeyInput}
+              onChange={e => setApiKeyInput(e.target.value)}
+              placeholder="sk-..."
+              style={{ width:"100%", background:"rgba(120,80,255,0.08)", border:"1px solid rgba(120,80,255,0.25)", borderRadius:10, color:"#e8e4ff", fontSize:14, padding:"12px 14px", fontFamily:"'DM Mono', monospace", boxSizing:"border-box", marginBottom:12 }}
+            />
+            <div style={{ display:"flex", gap:10 }}>
+              <button onClick={() => setShowApiModal(false)} style={{ flex:1, padding:"11px 0", borderRadius:10, border:"1px solid rgba(120,80,255,0.2)", background:"transparent", color:"rgba(200,185,255,0.6)", fontSize:14, cursor:"pointer", fontFamily:"inherit" }}>Cancel</button>
+              <button onClick={() => { if(apiKeyInput.startsWith("sk-")) { setApiKey(apiKeyInput); setShowApiModal(false); toast("API key connected! ⚡"); } else toast("Invalid API key format", "error"); }}
+                style={{ flex:2, padding:"11px 0", borderRadius:10, border:"none", background:"linear-gradient(135deg,#7c3aed,#4f46e5)", color:"#fff", fontSize:14, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>Connect API Key</button>
+            </div>
+            <p style={{ fontSize:11, color:"rgba(120,80,255,0.4)", margin:"12px 0 0", textAlign:"center" }}>Get your API key at <span style={{ color:"#a78bfa" }}>platform.openai.com</span></p>
+          </div>
+        </div>
+      )}
+
+      {/* Fullscreen */}
+      {fullscreen && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.95)", zIndex:2000, display:"flex", alignItems:"center", justifyContent:"center" }}
+          onClick={() => setFullscreen(null)}>
+          <img src={fullscreen.url} alt="" style={{ maxWidth:"90vw", maxHeight:"90vh", borderRadius:16, objectFit:"contain" }} />
+        </div>
+      )}
+
+      <Toaster toasts={toasts} />
+    </div>
+  );
+}
